@@ -1,6 +1,7 @@
+--find-links https://download.pytorch.org/whl/cpu
+torch
 gradio
 transformers
-torch
 gtts
 deep_translator
 nltk
