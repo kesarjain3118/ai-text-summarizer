@@ -6,6 +6,7 @@ import nltk
 from nltk.corpus import stopwords
 from collections import Counter
 import os
+import re
 
 # --- Setup and Model Loading ---
 
@@ -15,29 +16,20 @@ try:
 except LookupError:
     nltk.download('stopwords')
 
-# Load pre-trained AI models from Hugging Face
-print("Loading AI models...")
-# --- CHANGE 1: Using smaller models to save memory ---
-summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
-emotion_detector = pipeline("text-classification", model="bhadresh-savani/distilbert-base-uncased-emotion")
-print("Models loaded successfully.")
+# --- CHANGE 1: Use a single, efficient model for multiple tasks ---
+# This model will be loaded on the first request to save memory on startup.
+text_generator = None
 
 # --- Dictionaries and Mappings ---
-
-# Supported languages for translation
 TRANSLATION_LANGUAGES = {
     "English": "en", "French": "fr", "Spanish": "es", "German": "de",
     "Telugu": "te", "Hindi": "hi", "Tamil": "ta", "Bengali": "bn",
     "Chinese": "zh", "Japanese": "ja", "Arabic": "ar"
 }
-
-# Emojis corresponding to detected emotions
 EMOJI_MAPPING = {
     "joy": "😃", "anger": "😡", "sadness": "😢", "fear": "😨", "love": "😍",
     "surprise": "😲", "disgust": "🤢", "neutral": "😐"
 }
-
-# A small dictionary of common words and their ASL GIF representations
 ASL_DICTIONARY = {
     "hello": "https://www.lifeprint.com/asl101/gifs/h/hello.gif",
     "thank": "https://www.lifeprint.com/asl101/gifs/t/thank-you.gif",
@@ -49,21 +41,27 @@ ASL_DICTIONARY = {
     "happy": "https://www.lifeprint.com/asl101/gifs/h/happy.gif",
     "sad": "https://www.lifeprint.com/asl101/gifs/s/sad.gif"
 }
-
-# ASL finger-spelling GIFs for each letter of the alphabet
 ASL_ALPHABET_IMAGES = {letter: f"https://www.lifeprint.com/asl101/fingerspelling/{letter}.gif" for letter in "abcdefghijklmnopqrstuvwxyz"}
-
 
 # --- Core Functions ---
 
+# --- CHANGE 2: Function to load the single model on demand ---
+def get_text_generator():
+    """Loads the text generation model if it hasn't been loaded yet."""
+    global text_generator
+    if text_generator is None:
+        print("Loading text generation model for the first time...")
+        # Using a smaller T5 model capable of multiple tasks
+        text_generator = pipeline("text2text-generation", model="mrm8488/t5-base-finetuned-common_gen")
+        print("Text generation model loaded.")
+    return text_generator
+
 def extract_keywords(text, num_keywords=5):
-    """Extracts the most common words from text, excluding stopwords."""
     words = [word.lower() for word in text.split() if word.lower() not in stopwords.words('english') and word.isalpha()]
     common_words = Counter(words).most_common(num_keywords)
     return [word[0] for word in common_words]
 
 def get_asl_representation(text):
-    """Generates an HTML string of ASL GIFs for the given text."""
     words = text.lower().split()
     images_html = "<div style='display: flex; overflow-x: auto; white-space: nowrap; padding: 10px; border: 1px solid #ddd; border-radius: 8px;'>"
     for word in words:
@@ -78,18 +76,16 @@ def get_asl_representation(text):
     return images_html
 
 def translate_text(text, target_language):
-    """Translates text to the specified target language."""
     try:
         lang_code = TRANSLATION_LANGUAGES.get(target_language)
         if lang_code:
             return GoogleTranslator(source="auto", target=lang_code).translate(text)
-        return "Translation not available for this language."
+        return "Translation not available."
     except Exception as e:
         print(f"Translation Error: {e}")
         return "Translation failed."
 
 def text_to_speech(text, target_language):
-    """Converts text to an MP3 audio file."""
     lang_code = TRANSLATION_LANGUAGES.get(target_language, "en")
     try:
         tts = gTTS(text, lang=lang_code, slow=False)
@@ -101,76 +97,66 @@ def text_to_speech(text, target_language):
         return None
 
 def process_text_and_stream_outputs(text, target_language, min_words, max_words):
-    """
-    A generator function that processes text and yields results as they become available,
-    allowing the Gradio UI to update incrementally.
-    """
     if not text.strip():
-        yield {
-            summary_output: "Please enter some text to analyze.",
-            audio_output: None,
-            translated_output: "",
-            hashtags_output: "",
-            asl_output: ""
-        }
+        yield {summary_output: "Please enter some text to analyze.", audio_output: None, translated_output: "", hashtags_output: "", asl_output: ""}
         return
 
-    # --- Step 1: Summarization and Emotion Detection (CPU-intensive) ---
+    # --- CHANGE 3: Use the single model for both tasks by changing the prompt ---
+    generator = get_text_generator()
+
+    # --- Step 1: Summarization ---
     print("Step 1: Summarizing text...")
-    summary = summarizer(text, max_length=int(max_words), min_length=int(min_words), do_sample=False)[0]['summary_text']
-    emotion_result = emotion_detector(summary)[0]
-    emotion = emotion_result['label']
+    summary_prompt = f"summarize: {text}"
+    summary_result = generator(summary_prompt, max_length=int(max_words), min_length=int(min_words), do_sample=False)
+    summary = summary_result[0]['generated_text']
+
+    # --- Step 2: Emotion Detection ---
+    print("Step 2: Detecting emotion...")
+    emotion_prompt = f"detect emotion: {summary}"
+    emotion_result = generator(emotion_prompt, max_length=10) # Max length is short as we expect one word
+    # Clean up the output to get a single emotion word
+    emotion_text = emotion_result[0]['generated_text'].lower()
+    emotion = re.findall(r'\b(joy|anger|sadness|fear|love|surprise|disgust|neutral)\b', emotion_text)
+    emotion = emotion[0] if emotion else "neutral" # Default to neutral if no match
+
     emoji_display = EMOJI_MAPPING.get(emotion, "😐")
     summary_with_emotion = f"{summary} \n\nEmotion: {emotion} {emoji_display}"
-    
-    # Yield the first result
     yield {summary_output: summary_with_emotion}
 
-    # --- Step 2: Translation (Network I/O) ---
-    print("Step 2: Translating summary...")
+    # --- Subsequent steps remain the same ---
+    print("Step 3: Translating summary...")
     translated_summary = translate_text(summary, target_language)
     yield {translated_output: translated_summary}
 
-    # --- Step 3: Text-to-Speech (Network I/O) ---
-    print("Step 3: Generating audio...")
+    print("Step 4: Generating audio...")
     audio_path = text_to_speech(translated_summary, target_language)
     yield {audio_output: audio_path}
     
-    # --- Step 4: Hashtags (Fast, local processing) ---
-    print("Step 4: Generating hashtags...")
+    print("Step 5: Generating hashtags...")
     keywords = extract_keywords(summary)
     hashtags = "#" + " #".join(keywords)
     yield {hashtags_output: hashtags}
 
-    # --- Step 5: ASL Representation (Multiple Network I/O) ---
-    print("Step 5: Generating ASL representation...")
+    print("Step 6: Generating ASL representation...")
     asl_html = get_asl_representation(summary)
     yield {asl_output: asl_html}
     
     print("All steps complete.")
 
 
-# --- Gradio Interface using Blocks for Streaming ---
+# --- Gradio Interface (No changes needed here) ---
 with gr.Blocks(theme=gr.themes.Soft()) as demo:
-    gr.Markdown(
-        """
-        # Universal Text Analyzer 📝🔊🤟
-        Summarize text, detect emotions, translate, generate audio, create hashtags, and see it in American Sign Language.
-        Results will appear as they are generated.
-        """
-    )
+    gr.Markdown("# Universal Text Analyzer 📝🔊🤟")
+    gr.Markdown("Summarize text, detect emotions, translate, generate audio, create hashtags, and see it in American Sign Language.")
     
     with gr.Row():
         with gr.Column(scale=2):
             text_input = gr.Textbox(lines=10, placeholder="Enter a long text here...", label="Your Text")
             target_language_input = gr.Dropdown(choices=list(TRANSLATION_LANGUAGES.keys()), value="English", label="Translate to")
-            
             with gr.Row():
                 min_words_slider = gr.Slider(minimum=20, maximum=100, value=30, step=1, label="Min Summary Words")
                 max_words_slider = gr.Slider(minimum=50, maximum=500, value=150, step=1, label="Max Summary Words")
-            
             submit_button = gr.Button("Analyze Text", variant="primary")
-
         with gr.Column(scale=3):
             summary_output = gr.Textbox(label="Summary & Emotion", interactive=False)
             translated_output = gr.Textbox(label="Translated Summary", interactive=False)
@@ -178,13 +164,11 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
             audio_output = gr.Audio(label="Audio of Translated Summary")
             asl_output = gr.HTML(label="ASL Representation")
 
-    # Connect the inputs and outputs to the streaming function
     submit_button.click(
         fn=process_text_and_stream_outputs,
         inputs=[text_input, target_language_input, min_words_slider, max_words_slider],
         outputs=[summary_output, audio_output, translated_output, hashtags_output, asl_output]
     )
 
-# --- CHANGE 2: Using server-friendly launch command ---
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860)
