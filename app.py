@@ -169,6 +169,5 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         inputs=[text_input, target_language_input, min_words_slider, max_words_slider],
         outputs=[summary_output, audio_output, translated_output, hashtags_output, asl_output]
     )
-
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch()
