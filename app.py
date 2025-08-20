@@ -17,8 +17,9 @@ except LookupError:
 
 # Load pre-trained AI models from Hugging Face
 print("Loading AI models...")
-summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-emotion_detector = pipeline("text-classification", model="j-hartmann/emotion-english-distilroberta-base")
+# --- CHANGE 1: Using smaller models to save memory ---
+summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
+emotion_detector = pipeline("text-classification", model="bhadresh-savani/distilbert-base-uncased-emotion")
 print("Models loaded successfully.")
 
 # --- Dictionaries and Mappings ---
@@ -184,5 +185,6 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         outputs=[summary_output, audio_output, translated_output, hashtags_output, asl_output]
     )
 
+# --- CHANGE 2: Using server-friendly launch command ---
 if __name__ == "__main__":
-    demo.launch(share=True)
+    demo.launch(server_name="0.0.0.0", server_port=7860)
