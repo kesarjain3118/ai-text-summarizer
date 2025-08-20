@@ -1,0 +1,6 @@
+gradio
+transformers
+torch
+gtts
+deep_translator
+nltk
